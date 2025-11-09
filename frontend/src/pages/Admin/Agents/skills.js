@@ -73,4 +73,12 @@ export const configurableSkills = {
     component: AgentSQLConnectorSelection,
     skill: "sql-agent",
   },
+  "get-time": {
+    title: "Get server time",
+    description: "Allow the agent to retrieve the current server time.",
+    component: GenericSkillPanel,
+    skill: "get-time",
+    icon: FileMagnifyingGlass, // or import a clock icon
+    image: GenerateSaveImages, // reuse existing image or add your own
+  },
 };

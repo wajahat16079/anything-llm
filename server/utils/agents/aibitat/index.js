@@ -272,7 +272,7 @@ class AIbitat {
       /**
        * The message when the error occurred.
        */
-      {}
+      { }
     ) => null
   ) {
     this.emitter.on("replyError", listener);
@@ -486,8 +486,8 @@ class AIbitat {
         role: "user",
         content: `You are in a role play game. The following roles are available:
 ${availableNodes
-  .map((node) => `@${node}: ${this.getAgentConfig(node).role}`)
-  .join("\n")}.
+            .map((node) => `@${node}: ${this.getAgentConfig(node).role}`)
+            .join("\n")}.
 
 Read the following conversation.
 
@@ -548,8 +548,8 @@ Do not add introduction or conclusion to your reply because this will be a conti
 
 CHAT HISTORY
 ${this.getHistory({ to: route.to })
-  .map((c) => `@${c.from}: ${c.content}`)
-  .join("\n")}
+              .map((c) => `@${c.from}: ${c.content}`)
+              .join("\n")}
 
 @${route.from}:`,
         },

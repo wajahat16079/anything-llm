@@ -14,6 +14,90 @@ const {
 } = require("./index");
 
 const VALID_CHAT_MODE = ["chat", "query"];
+const AWS = require('aws-sdk');
+
+/**
+ * Parse S3-style URLs (supports both s3:// and https://bucket.s3.amazonaws.com/key)
+ */
+function parseS3Url(url) {
+  console.log('[S3 Parse] Parsing URL:', url);
+  url = url.trim().replace(/^["'`]+|["'`]+$/g, '');
+
+  // Remove any existing query parameters
+  const cleanUrl = url.split('?')[0];
+
+  if (cleanUrl.startsWith('s3://')) {
+    const parts = cleanUrl.replace('s3://', '').split('/');
+    return { bucket: parts.shift(), key: parts.join('/') };
+  }
+
+  // https://bucket.s3.region.amazonaws.com/key
+  let match = cleanUrl.match(/^https?:\/\/([\w\-\.]+)\.s3[\w\-\.]*\.amazonaws\.com\/(.+)$/i);
+  if (match) return { bucket: match[1], key: match[2] };
+
+  // https://s3.amazonaws.com/bucket/key
+  match = cleanUrl.match(/^https?:\/\/s3\.amazonaws\.com\/([\w\-\.]+)\/(.+)$/i);
+  if (match) return { bucket: match[1], key: match[2] };
+
+  throw new Error('Invalid S3 URL format');
+}
+
+/**
+ * Replace any S3 URLs in text with presigned URLs.
+ * Converts images to Markdown syntax so AnythingLLM renders them inline.
+ */
+/**
+ * Replace any S3 URLs in text with presigned URLs (AWS SDK v2 style)
+ */
+async function presignS3UrlsInText(text) {
+  console.log('[S3 Presign] Starting...');
+  if (!text || typeof text !== 'string') return text;
+
+  const s3UrlRegex =
+    /\b(s3:\/\/[a-z0-9\-\.]+\/[^\s"'`]+|https?:\/\/[a-z0-9\-\.]+\.s3[a-z0-9\-\.]*\.amazonaws\.com\/[^\s"'`]+|https?:\/\/s3\.amazonaws\.com\/[a-z0-9\-\.]+\/[^\s"'`]+)/gi;
+
+  console.log('[S3 Presign] Input length:', text.length);
+  const matches = text.match(s3UrlRegex);
+  console.log('[S3 Presign] Found matches:', matches);
+
+  if (!matches || matches.length === 0) {
+    console.log('[S3 Presign] No S3 URLs found.');
+    return text;
+  }
+
+  // ✅ Use AWS SDK v2
+  const AWS = require('aws-sdk');
+  const s3 = new AWS.S3({
+    region: process.env.AWS_REGION || 'us-west-2',
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    signatureVersion: 'v4', // important: old-style short URLs
+  });
+
+  text = text.replace(
+    /(https:\/\/lasermd-ai\.s3\.us-west-2\.amazonaws\.com\/anything-llm-data\/images\/[^\s"'`)>]+)(?=[\s"'`)>]|$)/g,
+    (rawUrl) => {
+      if (rawUrl.includes('<img') || rawUrl.includes('alt=')) return rawUrl;
+
+      try {
+        const key = `anything-llm-data/images/${rawUrl.split('/images/')[1].split('?')[0]}`;
+        const params = { Bucket: 'lasermd-ai', Key: key, Expires: 3600 };
+        const presignedUrl = s3.getSignedUrl('getObject', params);
+        const safeUrl = decodeURIComponent(presignedUrl);
+        return decodeURIComponent(presignedUrl);
+
+      } catch (err) {
+        console.error('[S3 Presign] Failed to presign:', rawUrl, err);
+        return rawUrl;
+      }
+    }
+  );
+
+
+  console.log('[S3 Presign] Completed.');
+  return text;
+}
+
 
 async function streamChatWithWorkspace(
   response,
@@ -150,19 +234,19 @@ async function streamChatWithWorkspace(
   const vectorSearchResults =
     embeddingsCount !== 0
       ? await VectorDb.performSimilaritySearch({
-          namespace: workspace.slug,
-          input: updatedMessage,
-          LLMConnector,
-          similarityThreshold: workspace?.similarityThreshold,
-          topN: workspace?.topN,
-          filterIdentifiers: pinnedDocIdentifiers,
-          rerank: workspace?.vectorSearchMode === "rerank",
-        })
+        namespace: workspace.slug,
+        input: updatedMessage,
+        LLMConnector,
+        similarityThreshold: workspace?.similarityThreshold,
+        topN: workspace?.topN,
+        filterIdentifiers: pinnedDocIdentifiers,
+        rerank: workspace?.vectorSearchMode === "rerank",
+      })
       : {
-          contextTexts: [],
-          sources: [],
-          message: null,
-        };
+        contextTexts: [],
+        sources: [],
+        message: null,
+      };
 
   // Failed similarity search if it was run at all and failed.
   if (!!vectorSearchResults.message) {
@@ -194,6 +278,11 @@ async function streamChatWithWorkspace(
   // TLDR; reduces GitHub issues for "LLM citing document that has no answer in it" while keep answers highly accurate.
   contextTexts = [...contextTexts, ...filledSources.contextTexts];
   sources = [...sources, ...vectorSearchResults.sources];
+
+  // Presign S3 URLs in context before sending to LLM
+  for (let i = 0; i < contextTexts.length; i++) {
+    contextTexts[i] = await presignS3UrlsInText(contextTexts[i]);
+  }
 
   // If in query mode and no context chunks are found from search, backfill, or pins -  do not
   // let the LLM try to hallucinate a response or use general knowledge and exit early
@@ -273,6 +362,8 @@ async function streamChatWithWorkspace(
   }
 
   if (completeText?.length > 0) {
+    console.log('[STREAM] About to presign S3 URLs');
+    completeText = await presignS3UrlsInText(completeText);
     const { chat } = await WorkspaceChats.new({
       workspaceId: workspace.id,
       prompt: message,

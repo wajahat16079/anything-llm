@@ -15,6 +15,59 @@ const {
 } = require("../agents/ephemeral");
 const { Telemetry } = require("../../models/telemetry");
 
+const AWS = require('aws-sdk');
+
+function parseS3Url(url) {
+  if (url.startsWith('s3://')) {
+    const parts = url.replace('s3://', '').split('/');
+    return { bucket: parts[0], key: parts.slice(1).join('/') };
+  }
+
+  const urlObj = new URL(url);
+  const pathParts = urlObj.pathname.slice(1).split('/');
+
+  if (urlObj.hostname.includes('.s3.')) {
+    return { bucket: urlObj.hostname.split('.')[0], key: pathParts.join('/') };
+  } else {
+    return { bucket: pathParts[0], key: pathParts.slice(1).join('/') };
+  }
+}
+
+async function presignS3UrlsInText(text) {
+  console.log('[S3 Presign] Input length:', text?.length);
+  const s3UrlRegex = /(s3:\/\/[\w\-\.]+\/[\w\-\.\/]+|https?:\/\/[\w\-\.]+\.s3[\w\-\.]*\.amazonaws\.com\/[\w\-\.\/]+|https?:\/\/s3[\w\-\.]*\.amazonaws\.com\/[\w\-\.\/]+)/gi;
+
+  const matches = text.match(s3UrlRegex);
+  console.log('[S3 Presign] Found matches:', matches);
+
+  if (!matches) return text;
+
+  const s3 = new AWS.S3({
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    region: process.env.AWS_REGION || 'us-east-1',
+  });
+
+  for (const url of matches) {
+    try {
+      console.log('[S3 Presign] Processing URL:', url);
+      const { bucket, key } = parseS3Url(url);
+      console.log('[S3 Presign] Bucket:', bucket, 'Key:', key);
+      const presignedUrl = s3.getSignedUrl('getObject', {
+        Bucket: bucket,
+        Key: key,
+        Expires: 3600,
+      });
+      console.log('[S3 Presign] Generated presigned URL');
+      text = text.replace(url, presignedUrl);
+    } catch (e) {
+      console.error(`[S3 Presign] Failed to presign ${url}:`, e.message);
+    }
+  }
+
+  return text;
+}
+
 /**
  * @typedef ResponseObject
  * @property {string} id - uuid of response
@@ -211,19 +264,19 @@ async function chatSync({
   const vectorSearchResults =
     embeddingsCount !== 0
       ? await VectorDb.performSimilaritySearch({
-          namespace: workspace.slug,
-          input: message,
-          LLMConnector,
-          similarityThreshold: workspace?.similarityThreshold,
-          topN: workspace?.topN,
-          filterIdentifiers: pinnedDocIdentifiers,
-          rerank: workspace?.vectorSearchMode === "rerank",
-        })
+        namespace: workspace.slug,
+        input: message,
+        LLMConnector,
+        similarityThreshold: workspace?.similarityThreshold,
+        topN: workspace?.topN,
+        filterIdentifiers: pinnedDocIdentifiers,
+        rerank: workspace?.vectorSearchMode === "rerank",
+      })
       : {
-          contextTexts: [],
-          sources: [],
-          message: null,
-        };
+        contextTexts: [],
+        sources: [],
+        message: null,
+      };
 
   // Failed similarity search if it was run at all and failed.
   if (!!vectorSearchResults.message) {
@@ -309,6 +362,7 @@ async function chatSync({
       temperature: workspace?.openAiTemp ?? LLMConnector.defaultTemp,
     });
 
+
   if (!textResponse) {
     return {
       id: uuid,
@@ -320,6 +374,12 @@ async function chatSync({
       metrics: performanceMetrics,
     };
   }
+
+  console.log('[CHAT] About to call presignS3UrlsInText');
+
+  // Auto-presign S3 URLs in response
+  textResponse = await presignS3UrlsInText(textResponse);
+
 
   const { chat } = await WorkspaceChats.new({
     workspaceId: workspace.id,
@@ -547,19 +607,19 @@ async function streamChat({
   const vectorSearchResults =
     embeddingsCount !== 0
       ? await VectorDb.performSimilaritySearch({
-          namespace: workspace.slug,
-          input: message,
-          LLMConnector,
-          similarityThreshold: workspace?.similarityThreshold,
-          topN: workspace?.topN,
-          filterIdentifiers: pinnedDocIdentifiers,
-          rerank: workspace?.vectorSearchMode === "rerank",
-        })
+        namespace: workspace.slug,
+        input: message,
+        LLMConnector,
+        similarityThreshold: workspace?.similarityThreshold,
+        topN: workspace?.topN,
+        filterIdentifiers: pinnedDocIdentifiers,
+        rerank: workspace?.vectorSearchMode === "rerank",
+      })
       : {
-          contextTexts: [],
-          sources: [],
-          message: null,
-        };
+        contextTexts: [],
+        sources: [],
+        message: null,
+      };
 
   // Failed similarity search if it was run at all and failed.
   if (!!vectorSearchResults.message) {
@@ -668,8 +728,11 @@ async function streamChat({
     completeText = await LLMConnector.handleStream(response, stream, { uuid });
     metrics = stream.metrics;
   }
+  console.log('[CHAT] About to call presignS3UrlsInText');
 
   if (completeText?.length > 0) {
+    // Auto-presign S3 URLs in response
+    completeText = await presignS3UrlsInText(completeText);
     const { chat } = await WorkspaceChats.new({
       workspaceId: workspace.id,
       prompt: message,

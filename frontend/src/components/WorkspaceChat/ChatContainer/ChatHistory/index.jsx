@@ -40,9 +40,18 @@ export default function ChatHistory({
 
   useEffect(() => {
     if (!isUserScrolling && (isAtBottom || isStreaming)) {
-      scrollToBottom(false); // Use instant scroll for auto-scrolling
+      scrollToBottom(false);
+    }
+    // Reset user scrolling flag when streaming starts/stops
+    if (isStreaming) {
+      setIsUserScrolling(false);
     }
   }, [history, isAtBottom, isStreaming, isUserScrolling]);
+
+  useEffect(() => {
+    // Reset user scrolling when new messages arrive
+    setIsUserScrolling(false);
+  }, [history.length]);
 
   const handleScroll = (e) => {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
